@@ -1,0 +1,82 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'prices.csv'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          ls *.zip || { echo "فایل zip پروژه تو مخزن نیست"; exit 1; }
+          mkdir -p src
+          for z in *.zip; do unzip -q -o "$z" -d src; done
+          P=$(dirname "$(find src -name pubspec.yaml | head -1)")
+          echo "PROJECT_DIR=$P" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android scaffold
+        run: flutter create --platforms=android --org ir.dishprices --project-name dish_prices app_build
+
+      - name: Copy app files
+        run: |
+          rm -rf app_build/test app_build/lib app_build/analysis_options.yaml
+          cp -r "$PROJECT_DIR/lib" app_build/lib
+          cp -r "$PROJECT_DIR/assets" app_build/assets
+          cp "$PROJECT_DIR/pubspec.yaml" app_build/pubspec.yaml
+
+      - name: Set data URL and internet permission
+        run: |
+          sed -i "s#__REPO__#${{ github.repository }}#; s#__BRANCH__#${{ github.ref_name }}#" app_build/lib/config.dart
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' app_build/android/app/src/main/AndroidManifest.xml
+
+      - name: Get packages
+        working-directory: app_build
+        run: flutter pub get
+
+      - name: Launcher icon
+        working-directory: app_build
+        continue-on-error: true
+        run: dart run flutter_launcher_icons
+
+      - name: App name
+        run: |
+          NAME=$(cat "$PROJECT_DIR/app_name.txt" 2>/dev/null || echo HexPrice)
+          sed -i "s#android:label=\"[^\"]*\"#android:label=\"$NAME\"#" app_build/android/app/src/main/AndroidManifest.xml
+
+      - name: Build release APK
+        working-directory: app_build
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: cp app_build/build/app/outputs/flutter-apk/app-release.apk dish-prices.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dish-prices-apk
+          path: dish-prices.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: نسخه ${{ github.run_number }}
+          files: dish-prices.apk
